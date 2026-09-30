@@ -146,7 +146,7 @@ public class MainActivity extends Activity implements TextToSpeech.OnInitListene
                 int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "latif-preview");
                 status.setText(result == TextToSpeech.SUCCESS ? "Speaking with the installed Android TTS engine." : "TTS engine could not start.");
             }} else {{
-                status.setText("SELF-TEST PASS\nProject: {label}\nMode: {mode}\nUI: ready\nLocal input: " + (text.isEmpty() ? "empty" : "accepted"));
+                status.setText("SELF-TEST PASS\\nProject: {label}\\nMode: {mode}\\nUI: ready\\nLocal input: " + (text.isEmpty() ? "empty" : "accepted"));
             }}
         }});
 
