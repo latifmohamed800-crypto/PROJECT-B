@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "apps": [
+    {
+      "slug": "latif-ai-os-audiobook",
+      "name": "LATIF AI OS Audiobook",
+      "mode": "audiobook",
+      "description": "Offline Android audiobook workspace for the LATIF AI OS recovery line."
+    },
+    {
+      "slug": "sigma-latifword-core",
+      "name": "SIGMA LATIFWORD CORE",
+      "mode": "core",
+      "description": "Android companion for the SIGMA LATIFWORD core project."
+    },
+    {
+      "slug": "latif-a-book",
+      "name": "LATIF A BOOK",
+      "mode": "audiobook",
+      "description": "Android reading and TTS recovery app for LATIF A BOOK."
+    }
+  ]
+}
