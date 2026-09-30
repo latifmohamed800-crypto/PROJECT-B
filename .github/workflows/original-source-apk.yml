@@ -1,51 +1,105 @@
-name: Original Source APK - Offline Audiobook
+name: Fixed Offline Arabic APK - Nabra bundled
+
 on:
   push:
     branches: [PROJECT-B]
-    paths: ['.github/workflows/original-source-apk.yml']
+    paths:
+      - '.github/workflows/original-source-apk.yml'
+      - 'projects/latif-ai-os-audiobook/preserved-offline-android/**'
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      MODEL_URL: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/nabra-82m-arabic-int8.tar.bz2
+      MODEL_SHA256: e7c644fabb1529190de9a2f7d6044f88c26bf6d9b717ad41ef5d2b748e01459
+      APP_ROOT: projects/latif-ai-os-audiobook/preserved-offline-android
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - name: Android SDK
+
+      - name: Configure Android SDK
+        shell: bash
         run: |
+          set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
-      - name: Fetch preserved offline Android source
-        run: git clone --depth 1 --branch mainLAtifword https://github.com/LAtifword/LAtifword-Audiobook.git /tmp/audiobook
-      - name: Build preserved offline Android application
-        run: gradle -p /tmp/audiobook/android_offline --no-daemon --stacktrace :app:assembleDebug
-      - name: Verify and package
+          gradle-version: '8.10.2'
+
+      - name: Download and embed official Nabra Arabic model
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-delay 3 "$MODEL_URL" -o /tmp/nabra.tar.bz2
+          echo "$MODEL_SHA256  /tmp/nabra.tar.bz2" | sha256sum -c -
+          rm -rf /tmp/nabra-unpack
+          mkdir -p /tmp/nabra-unpack "$APP_ROOT/app/src/main/assets/models/nabra"
+          tar -xjf /tmp/nabra.tar.bz2 -C /tmp/nabra-unpack
+          SRC="$(find /tmp/nabra-unpack -type f -name model.int8.onnx -printf '%h\n' | head -1)"
+          test -n "$SRC"
+          rm -rf "$APP_ROOT/app/src/main/assets/models/nabra"
+          mkdir -p "$APP_ROOT/app/src/main/assets/models/nabra"
+          cp -a "$SRC"/. "$APP_ROOT/app/src/main/assets/models/nabra/"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/model.int8.onnx"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/voices.bin"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/tokens.txt"
+          test -d "$APP_ROOT/app/src/main/assets/models/nabra/espeak-ng-data"
+          du -sh "$APP_ROOT/app/src/main/assets/models/nabra"
+
+      - name: Build functional offline APK
+        run: gradle -p "$APP_ROOT" --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Verify APK contains runtime and model
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          APK=/tmp/audiobook/android_offline/app/build/outputs/apk/debug/app-debug.apk
+          APK="$APP_ROOT/app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          cp "$APK" dist/LATIF-OFFLINE-AUDIOBOOK-RECOVERED-SOURCE.apk
-          unzip -t dist/*.apk >/dev/null
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify dist/LATIF-OFFLINE-AUDIOBOOK-RECOVERED-SOURCE.apk
-          sha256sum dist/*.apk | tee dist/SHA256SUMS.txt
+          cp "$APK" "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk"
+          unzip -t "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" >/dev/null
+          unzip -l "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | grep -q 'assets/models/nabra/model.int8.onnx'
+          unzip -l "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | grep -q 'assets/models/nabra/voices.bin'
+          unzip -l "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | grep -q 'assets/models/nabra/tokens.txt'
+          unzip -l "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | grep -q 'assets/models/nabra/espeak-ng-data/'
+          unzip -l "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | grep -q 'lib/arm64-v8a/libsherpa-onnx-jni.so'
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk"
+          SIZE="$(stat -c%s "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk")"
+          test "$SIZE" -gt 80000000
+          sha256sum "dist/LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA.apk" | tee dist/SHA256SUMS.txt
+          ls -lh dist/
+
       - uses: actions/upload-artifact@v4
         with:
-          name: LATIF-OFFLINE-AUDIOBOOK-RECOVERED-SOURCE-APK
+          name: LATIF-OFFLINE-AUDIOBOOK-FIXED-NABRA
           path: dist/
-      - name: Release
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish fixed release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "source-offline-audiobook-${{ github.run_number }}" dist/* --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "LATIF Offline Audiobook · Preserved Source APK" --notes "Built from the preserved original offline Android source in LAtifword/LAtifword-Audiobook."
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="fixed-offline-audiobook-${{ github.run_number }}"
+          gh release create "$TAG" dist/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "LATIF Offline Audiobook · Fixed Nabra Build" \
+            --notes "FIXED build: bundles the official Nabra 82M Arabic INT8 model, voices, tokens, espeak-ng data and Sherpa-ONNX runtime. CI rejects the release if any required runtime asset is missing."
