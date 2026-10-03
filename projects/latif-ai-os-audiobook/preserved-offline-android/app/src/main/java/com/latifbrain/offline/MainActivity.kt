@@ -48,6 +48,10 @@ class MainActivity : Activity() {
     private var outputFile: File? = null
     private var previewFile: File? = null
     private var player: MediaPlayer? = null
+    private var playingFile: File? = null
+    private var destroyed = false
+    private var busy = false
+    private fun postUi(action: () -> Unit) = runOnUiThread { if (!destroyed) action() }
 
     private val espresso = Color.rgb(31, 25, 21)
     private val cocoa = Color.rgb(62, 49, 40)
@@ -265,6 +269,7 @@ class MainActivity : Activity() {
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "text/plain"
+                    putExtra(Intent.EXTRA_LOCAL_ONLY, true)
                 },
                 REQUEST_TEXT
             )
@@ -566,13 +571,13 @@ class MainActivity : Activity() {
                 val probe = tts.synthesize("مرحبا", 1.0f)
                 check(probe.isNotEmpty()) { "Native TTS self-test produced no audio." }
 
-                runOnUiThread {
+                postUi {
                     status.text = "✓ Offline engine verified. Arabic synthesis is ready."
                     previewButton.isEnabled = true
                     renderButton.isEnabled = true
                 }
             } catch (e: Throwable) {
-                runOnUiThread {
+                postUi {
                     status.text = "Engine startup failed: ${e.javaClass.simpleName}: ${e.message}"
                     previewButton.isEnabled = false
                     renderButton.isEnabled = false
@@ -582,6 +587,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderPreview(speed: Float) {
+        if (busy) return
         if (!tts.isModelBundled()) {
             Toast.makeText(this, "Offline model is missing from APK assets.", Toast.LENGTH_LONG).show()
             return
@@ -592,7 +598,9 @@ class MainActivity : Activity() {
             return
         }
 
+        busy = true
         previewButton.isEnabled = false
+        renderButton.isEnabled = false
         previewPlayButton.isEnabled = false
         status.text = "Creating local preview…"
 
@@ -604,13 +612,17 @@ class MainActivity : Activity() {
                 WavWriter.floatToPcm16(samples, pcm)
                 WavWriter.mergePcm16Mono(listOf(pcm), wav, tts.sampleRate())
                 previewFile = wav
-                runOnUiThread {
+                postUi {
+                    busy = false
+                    renderButton.isEnabled = true
                     status.text = "✓ Preview ready. Listen before rendering the full book."
                     previewButton.isEnabled = true
                     previewPlayButton.isEnabled = true
                 }
             } catch (e: Throwable) {
-                runOnUiThread {
+                postUi {
+                    busy = false
+                    renderButton.isEnabled = true
                     status.text = "Preview error: ${e.message}"
                     previewButton.isEnabled = true
                 }
@@ -619,6 +631,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderBook(speed: Float) {
+        if (busy) return
         if (!tts.isModelBundled()) {
             Toast.makeText(this, "Offline model is missing from APK assets.", Toast.LENGTH_LONG).show()
             return
@@ -629,6 +642,9 @@ class MainActivity : Activity() {
             return
         }
 
+        val ticket = renderer.begin()
+        busy = true
+        previewButton.isEnabled = false
         progress.progress = 0
         renderButton.isEnabled = false
         fullPlayButton.isEnabled = false
@@ -639,25 +655,31 @@ class MainActivity : Activity() {
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifBrain::Render")
             try {
                 wake.acquire(30 * 60 * 1000L)
-                outputFile = renderer.render(text, speed) { p ->
-                    runOnUiThread {
+                outputFile = renderer.render(text, speed, ticket) { p ->
+                    postUi {
                         progress.progress = if (p.total == 0) 0 else (100 * p.completed / p.total)
                         status.text = p.message
                     }
                 }
-                runOnUiThread {
+                postUi {
+                    busy = false
+                    previewButton.isEnabled = true
                     progress.progress = 100
                     status.text = "✓ Audiobook ready: ${outputFile?.name}"
                     renderButton.isEnabled = true
                     fullPlayButton.isEnabled = true
                 }
             } catch (_: InterruptedException) {
-                runOnUiThread {
+                postUi {
+                    busy = false
+                    previewButton.isEnabled = true
                     status.text = "Generation stopped. Existing segments remain available for resume."
                     renderButton.isEnabled = true
                 }
             } catch (e: Throwable) {
-                runOnUiThread {
+                postUi {
+                    busy = false
+                    previewButton.isEnabled = true
                     status.text = "Render error: ${e.message}"
                     renderButton.isEnabled = true
                 }
@@ -673,11 +695,13 @@ class MainActivity : Activity() {
             return
         }
 
+        if (playingFile != file) { player?.release(); player = null }
         player?.let {
             if (it.isPlaying) it.pause() else it.start()
             return
         }
 
+        playingFile = file
         player = MediaPlayer().apply {
             setDataSource(file.absolutePath)
             prepare()
@@ -694,24 +718,22 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_TEXT && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
-            try {
-                contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8).use { reader ->
-                    val value = reader?.readText().orEmpty()
-                    if (value.isNotBlank()) textBox.setText(value)
-                }
-                status.text = "✓ Manuscript loaded."
-                refreshManuscriptStats()
-            } catch (e: Throwable) {
-                status.text = "Could not read manuscript: ${e.message}"
+            executor.execute {
+                try {
+                    val value = contentResolver.openInputStream(uri)?.use { ManuscriptText.read(it) }
+                        ?: error("Could not open manuscript")
+                    postUi { textBox.setText(value); status.text = "✓ Manuscript loaded." }
+                } catch (e: Throwable) { postUi { status.text = "Could not read manuscript: ${e.message}" } }
             }
         }
     }
 
     override fun onDestroy() {
+        destroyed = true
         renderer.cancel()
-        executor.shutdownNow()
         player?.release()
-        tts.close()
+        executor.execute { tts.close() }
+        executor.shutdown()
         super.onDestroy()
     }
 

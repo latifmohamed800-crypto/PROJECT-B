@@ -27,7 +27,7 @@ class OfflineArabicTts(private val context: Context) : AutoCloseable {
         check(isModelBundled()) { "Offline Arabic model missing or incomplete inside APK assets." }
 
         val dataDir = ensureEspeakDataDir()
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
