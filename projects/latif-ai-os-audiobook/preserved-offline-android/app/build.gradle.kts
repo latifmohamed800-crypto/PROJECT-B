@@ -11,8 +11,8 @@ android {
         applicationId = "com.latifbrain.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-studio"
+        versionCode = 4
+        versionName = "0.4.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -50,5 +50,6 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("com.xdcobra.sherpa:sherpa-onnx:1.13.8-1")
 }
