@@ -2,10 +2,10 @@ name: Latest Android APK — Offline Audiobook
 
 on:
   push:
-    branches: [PROJECT-B]
+    branches: [PROJECT-B, '"LATIF-UHE-RFP-Generator-Platform']
     paths: ['projects/latif-ai-os-audiobook/preserved-offline-android/**', '.github/workflows/original-source-apk.yml']
   pull_request:
-    branches: [PROJECT-B]
+    branches: [PROJECT-B, '"LATIF-UHE-RFP-Generator-Platform']
     paths: ['projects/latif-ai-os-audiobook/preserved-offline-android/**', '.github/workflows/original-source-apk.yml']
   workflow_dispatch:
 
@@ -95,17 +95,25 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           TAG="android-$APP_VERSION"
           OPTIONS=(--prerelease --latest=false)
-          if [ "$GITHUB_REF" = "refs/heads/PROJECT-B" ]; then OPTIONS=(--latest); fi
+          IS_CANONICAL=false
+          if [ "$GITHUB_REF_NAME" = "PROJECT-B" ] || [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ]; then IS_CANONICAL=true; OPTIONS=(--latest); fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            EXISTING="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
-            if [ "$EXISTING" = "false" ] && [ "$GITHUB_REF" != "refs/heads/PROJECT-B" ]; then echo "Bump app version before replacing a stable release"; exit 1; fi
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
-            if [ "$GITHUB_REF" = "refs/heads/PROJECT-B" ]; then gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest; fi
+            # Reuse the tested candidate when its app source is identical. Never move a release tag
+            # or replace its signing key: GitHub immutable releases protect both tag and assets.
+            git fetch --depth 1 origin "refs/tags/$TAG"
+            RELEASE_TREE="$(git rev-parse "FETCH_HEAD:$APP_ROOT")"
+            CURRENT_TREE="$(git rev-parse "HEAD:$APP_ROOT")"
+            if [ "$RELEASE_TREE" != "$CURRENT_TREE" ]; then echo "App source changed: bump APP_VERSION before publishing"; exit 1; fi
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > /tmp/release-assets.txt
+            for ASSET in "$APK_NAME" BUILD_INFO.json SHA256SUMS.txt; do
+              grep -Fxq "$ASSET" /tmp/release-assets.txt || { echo "Release is missing $ASSET"; exit 1; }
+            done
+            if [ "$IS_CANONICAL" = true ]; then gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest; fi
           else
             gh release create "$TAG" dist/* "${OPTIONS[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Offline Audiobook $APP_VERSION" --notes "Current offline Android app from projects/latif-ai-os-audiobook/preserved-offline-android. One APK, checksums and exact build provenance. Debug-signed development build; physical-device performance is not measured by this pipeline."
           fi
