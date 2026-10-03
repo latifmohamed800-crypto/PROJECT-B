@@ -1,0 +1,23 @@
+name: Cleanup broken recovery releases
+on:
+  push:
+    branches: [PROJECT-B]
+    paths: ['.github/workflows/cleanup-broken-releases.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove broken APK releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete "recovery-3" --repo "$GITHUB_REPOSITORY" --yes || true
+          git push origin ":refs/tags/recovery-3" || true
+          gh release delete "source-offline-audiobook-1" --repo "$GITHUB_REPOSITORY" --yes || true
+          git push origin ":refs/tags/source-offline-audiobook-1" || true

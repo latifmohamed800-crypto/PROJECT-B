@@ -1,0 +1,111 @@
+name: Latest Android APK — Offline Audiobook
+
+on:
+  push:
+    branches: [PROJECT-B]
+    paths: ['projects/latif-ai-os-audiobook/preserved-offline-android/**', '.github/workflows/original-source-apk.yml']
+  pull_request:
+    branches: [PROJECT-B]
+    paths: ['projects/latif-ai-os-audiobook/preserved-offline-android/**', '.github/workflows/original-source-apk.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: latest-android-project-b
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      APP_ROOT: projects/latif-ai-os-audiobook/preserved-offline-android
+      APK_NAME: LATIF-OFFLINE-AUDIOBOOK.apk
+      APP_VERSION: 0.4.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Verify and bundle the Arabic model
+        run: |
+          set -euo pipefail
+          curl -fL --retry 6 --retry-delay 3 "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/nabra-82m-arabic-int8.tar.bz2" -o /tmp/nabra.tar.bz2
+          echo "e7c644fabb1529190de9a2f7d6044f88c26bf6d9b717ad41ef5d2b748e01459b  /tmp/nabra.tar.bz2" | sha256sum -c -
+          mkdir -p /tmp/nabra-unpack
+          tar -xjf /tmp/nabra.tar.bz2 -C /tmp/nabra-unpack
+          SRC="$(find /tmp/nabra-unpack -type f -name model.int8.onnx -printf '%h\n' | head -1)"
+          test -n "$SRC"
+          mkdir -p "$APP_ROOT/app/src/main/assets/models/nabra"
+          cp -a "$SRC"/. "$APP_ROOT/app/src/main/assets/models/nabra/"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/model.int8.onnx"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/voices.bin"
+          test -s "$APP_ROOT/app/src/main/assets/models/nabra/tokens.txt"
+          test -d "$APP_ROOT/app/src/main/assets/models/nabra/espeak-ng-data"
+      - name: Validate and build the current app
+        run: gradle -p "$APP_ROOT" --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+      - name: Verify APK and record provenance
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "$APP_ROOT/app/build/outputs/apk/debug/app-debug.apk" "dist/$APK_NAME"
+          unzip -t "dist/$APK_NAME" >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "dist/$APK_NAME"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions "dist/$APK_NAME" > /tmp/apk-permissions.txt
+          if grep -q 'android.permission.INTERNET' /tmp/apk-permissions.txt; then echo "Unexpected internet permission in offline app"; exit 1; fi
+          python3 - <<'CHECK'
+          import os, zipfile
+          from pathlib import Path
+          with zipfile.ZipFile(Path('dist') / os.environ['APK_NAME']) as apk:
+              names = set(apk.namelist())
+              for name in ['assets/models/nabra/model.int8.onnx', 'assets/models/nabra/voices.bin', 'assets/models/nabra/tokens.txt', 'lib/arm64-v8a/libsherpa-onnx-jni.so']:
+                  assert name in names and apk.getinfo(name).file_size > 0, name
+              assert any(name.startswith('assets/models/nabra/espeak-ng-data/') for name in names)
+          CHECK
+          python3 - <<'INFO'
+          import os, json
+          from pathlib import Path
+          keys = ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'APP_ROOT', 'APP_VERSION', 'APK_NAME']
+          data = {key: os.environ[key] for key in keys}
+          data.update(signing='debug', physical_device_tested=False)
+          Path('dist/BUILD_INFO.json').write_text(json.dumps(data, indent=2) + '\n')
+          INFO
+          (cd dist && sha256sum "$APK_NAME" BUILD_INFO.json > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Offline-Audiobook-latest
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Publish one APK for this app version
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="android-$APP_VERSION"
+          OPTIONS=(--prerelease --latest=false)
+          if [ "$GITHUB_REF" = "refs/heads/PROJECT-B" ]; then OPTIONS=(--latest); fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            EXISTING="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
+            if [ "$EXISTING" = "false" ] && [ "$GITHUB_REF" != "refs/heads/PROJECT-B" ]; then echo "Bump app version before replacing a stable release"; exit 1; fi
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            if [ "$GITHUB_REF" = "refs/heads/PROJECT-B" ]; then gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest; fi
+          else
+            gh release create "$TAG" dist/* "${OPTIONS[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Offline Audiobook $APP_VERSION" --notes "Current offline Android app from projects/latif-ai-os-audiobook/preserved-offline-android. One APK, checksums and exact build provenance. Debug-signed development build; physical-device performance is not measured by this pipeline."
+          fi

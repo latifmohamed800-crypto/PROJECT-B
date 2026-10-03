@@ -1,0 +1,29 @@
+name: Import Preserved Offline Android Source
+on:
+  push:
+    branches: [PROJECT-B]
+    paths: ['.github/workflows/import-preserved-offline-source.yml']
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Import preserved Android source
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/audiobook projects/latif-ai-os-audiobook/preserved-offline-android
+          git clone --depth 1 --branch mainLAtifword https://github.com/LAtifword/LAtifword-Audiobook.git /tmp/audiobook
+          mkdir -p projects/latif-ai-os-audiobook/preserved-offline-android
+          cp -a /tmp/audiobook/android_offline/. projects/latif-ai-os-audiobook/preserved-offline-android/
+      - name: Commit source into PROJECT-B
+        run: |
+          git config user.name "LATIF Recovery Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add projects/latif-ai-os-audiobook/preserved-offline-android
+          git commit -m "recovery: persist preserved offline Android source" || exit 0
+          git pull --rebase origin PROJECT-B
+          git push origin HEAD:PROJECT-B
